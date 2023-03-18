@@ -10,6 +10,7 @@
   },
   "imports": {
     "grammy": "https://deno.land/x/grammy@v1.15.3/mod.ts",
+    "regexp": "https://esm.sh/magic-regexp@0.6.3",
     "std/": "https://deno.land/std@0.180.0/"
   }
 }

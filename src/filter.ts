@@ -1,10 +1,9 @@
-import { Config } from './config.ts'
+import { ProcessedConfig } from './config.ts'
 import { Message } from './message.ts'
 
-export const filter = ({ banWords }: Config) => ({ text }: Message) => {
-  const tokens = text.split(/\s/).map((token) => token.toLowerCase())
+export const filter =
+  ({ bannedWordsRegex }: ProcessedConfig) => ({ text }: Message) => {
+    const isBanned = bannedWordsRegex.test(text)
 
-  const isBanned = tokens.some((token) => banWords.includes(token))
-
-  return { isBanned }
-}
+    return { isBanned }
+  }

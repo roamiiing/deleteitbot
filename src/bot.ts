@@ -1,17 +1,17 @@
 import { Bot } from 'grammy'
 
-import { Config } from './config.ts'
+import { ProcessedConfig } from './config.ts'
 import { filter } from './filter.ts'
 import { Message } from './message.ts'
 
-export const createBot = (config: Config, botToken: string) => {
+export const createBot = (config: ProcessedConfig, botToken: string) => {
   const { chats } = config
   const bot = new Bot(botToken)
 
   const appliedFilter = filter(config)
 
   bot.use((ctx, next) => {
-    if (ctx.chat && chats.includes(ctx.chat.id)) {
+    if (ctx.chat && chats.has(ctx.chat.id)) {
       return next()
     }
   })
@@ -19,7 +19,7 @@ export const createBot = (config: Config, botToken: string) => {
   bot.on('message', (ctx) => {
     const message = Message.fromGrammyCtx(ctx)
 
-    if (appliedFilter(message)) {
+    if (appliedFilter(message).isBanned) {
       ctx.deleteMessage()
     }
   })
