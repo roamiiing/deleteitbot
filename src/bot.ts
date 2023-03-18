@@ -2,7 +2,7 @@ import { Bot } from 'grammy'
 
 import { ProcessedConfig } from './config.ts'
 import { filter } from './filter.ts'
-import { Message } from './message.ts'
+import { fromGrammyCtx } from './message.ts'
 
 export const createBot = (config: ProcessedConfig, botToken: string) => {
   const { chats } = config
@@ -17,7 +17,7 @@ export const createBot = (config: ProcessedConfig, botToken: string) => {
   })
 
   bot.on('message', (ctx) => {
-    const message = Message.fromGrammyCtx(ctx)
+    const message = fromGrammyCtx(ctx)
 
     if (appliedFilter(message).isBanned) {
       ctx.deleteMessage()

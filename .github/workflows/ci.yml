@@ -16,6 +16,9 @@ jobs:
       - name: Deno lint
         run: deno lint
 
+      - name: Deno test
+        run: deno test
+
       - uses: sarisia/actions-status-discord@v1
         if: always()
         with:
