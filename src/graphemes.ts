@@ -3,7 +3,9 @@ import {
   CUSTOM_WORD_BOUNDARY,
   escape,
   oneOrMore,
+  sequence,
   toRegExp,
+  zeroOrMore,
 } from './regex.ts'
 import cyrillicMap from './graphemes/cyrillic.json' assert { type: 'json' }
 import latinMap from './graphemes/latin.json' assert { type: 'json' }
@@ -47,14 +49,24 @@ const GRAPHEMES_REGEX_PARTS = Object.fromEntries(
 
 export const getGraphemedRegex = (wordsList: string[]): RegExp => {
   const inputs = wordsList
-    .map((bannedWord) =>
-      bannedWord
+    .map((word) =>
+      word
         .split('')
-        .map((char) => GRAPHEMES_REGEX_PARTS[char] ?? escape(char))
-        .reduce((acc, cur) => acc + cur)
+        .map((char) =>
+          sequence(
+            zeroOrMore(CUSTOM_WORD_BOUNDARY),
+            GRAPHEMES_REGEX_PARTS[char] ?? escape(char),
+            zeroOrMore(CUSTOM_WORD_BOUNDARY),
+          )
+        )
+        .reduce((acc, cur) => sequence(acc, cur))
     )
     .map((parts) =>
-      CUSTOM_WORD_BOUNDARY + oneOrMore(parts) + CUSTOM_WORD_BOUNDARY
+      sequence(
+        oneOrMore(CUSTOM_WORD_BOUNDARY),
+        oneOrMore(parts),
+        oneOrMore(CUSTOM_WORD_BOUNDARY),
+      )
     )
 
   const regex = toRegExp(anyOf(...inputs), 'i')
