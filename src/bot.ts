@@ -19,8 +19,11 @@ export const createBot = (config: ProcessedConfig, botToken: string) => {
   bot.on('message', (ctx) => {
     const message = fromGrammyCtx(ctx)
 
-    if (appliedFilter(message).isBanned) {
+    const filtered = appliedFilter(message)
+
+    if (filtered.isBanned) {
       ctx.deleteMessage()
+      bot.api.sendMessage(ctx.chat.id, filtered.replaced)
     }
   })
 

@@ -11,9 +11,13 @@ export const sequence = (...strs: string[]) => strs.join('')
 
 export const optional = (str: string) => `(?:${str})?`
 
+export const capturingGroup = (str: string) => `(${str})`
+
 export const toRegExp = (str: string, flags?: string) => new RegExp(str, flags)
 
 export const ANYTHING = '.'
+
+export const NOTHING = ''
 
 export const MARKS = `[${escape('`~!@#$%^&*()_+-={}[]|\\:;"\'<>,.?/’‘')}]`
 

@@ -1,7 +1,9 @@
 import {
   anyOf,
+  capturingGroup,
   CUSTOM_WORD_BOUNDARY,
   escape,
+  NOTHING,
   oneOrMore,
   sequence,
   toRegExp,
@@ -52,24 +54,25 @@ export const getGraphemedRegex = (wordsList: string[]): RegExp => {
     .map((word) =>
       word
         .split('')
-        .map((char) =>
+        .map((char, index) =>
           sequence(
-            zeroOrMore(CUSTOM_WORD_BOUNDARY),
+            index > 0 ? zeroOrMore(CUSTOM_WORD_BOUNDARY) : NOTHING,
             GRAPHEMES_REGEX_PARTS[char] ?? escape(char),
-            zeroOrMore(CUSTOM_WORD_BOUNDARY),
           )
         )
         .reduce((acc, cur) => sequence(acc, cur))
     )
-    .map((parts) =>
-      sequence(
-        oneOrMore(CUSTOM_WORD_BOUNDARY),
-        oneOrMore(parts),
-        oneOrMore(CUSTOM_WORD_BOUNDARY),
-      )
-    )
 
-  const regex = toRegExp(anyOf(...inputs), 'i')
+  const regex = toRegExp(
+    sequence(
+      zeroOrMore(CUSTOM_WORD_BOUNDARY),
+      capturingGroup(
+        oneOrMore(anyOf(...inputs)),
+      ),
+      oneOrMore(CUSTOM_WORD_BOUNDARY),
+    ),
+    'ig',
+  )
 
   return regex
 }
