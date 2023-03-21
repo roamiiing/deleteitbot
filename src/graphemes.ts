@@ -5,6 +5,7 @@ import {
   escape,
   NOTHING,
   oneOrMore,
+  optional,
   sequence,
   toRegExp,
   zeroOrMore,
@@ -55,9 +56,19 @@ export const getGraphemedRegex = (wordsList: string[]): RegExp => {
       word
         .split('')
         .map((char, index) =>
-          sequence(
-            index > 0 ? zeroOrMore(CUSTOM_WORD_BOUNDARY) : NOTHING,
-            GRAPHEMES_REGEX_PARTS[char] ?? escape(char),
+          oneOrMore(
+            sequence(
+              index === 0 ? NOTHING : zeroOrMore(CUSTOM_WORD_BOUNDARY),
+              GRAPHEMES_REGEX_PARTS[char] ?? escape(char),
+              index === 0
+                ? optional(
+                  sequence(
+                    zeroOrMore(CUSTOM_WORD_BOUNDARY),
+                    GRAPHEMES_REGEX_PARTS[char] ?? escape(char),
+                  ),
+                )
+                : NOTHING,
+            ),
           )
         )
         .reduce((acc, cur) => sequence(acc, cur))
