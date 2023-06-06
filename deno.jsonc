@@ -10,7 +10,6 @@
   },
   "imports": {
     "grammy": "https://deno.land/x/grammy@v1.15.3/mod.ts",
-    "canvas": "https://deno.land/x/imagescript@v1.2.14/mod.ts",
     "std/": "https://deno.land/std@0.180.0/",
     "src/": "./src/",
     "test/": "./test/"

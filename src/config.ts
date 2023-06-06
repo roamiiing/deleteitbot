@@ -8,18 +8,30 @@ export type WordConfig = string
 export type Config = {
   chats: ChatConfig[]
   banWords: WordConfig[]
+
+  /**
+   * Time in seconds in which the message will be deleted
+   * @default 0
+   */
+  timeout?: number
 }
 
 export type ProcessedConfig = {
   chats: Set<ChatConfig>
   bannedWordsRegex: RegExp
+  timeout: number
 }
 
 export const processConfig = (config: Config): ProcessedConfig => {
   const chats = new Set(config.chats)
   const bannedWordsRegex = getGraphemedRegex(config.banWords)
+  const timeout = config.timeout ?? 0
 
-  return { chats, bannedWordsRegex }
+  return {
+    chats,
+    bannedWordsRegex,
+    timeout,
+  }
 }
 
 export const getConfig = async (path: string): Promise<ProcessedConfig> => {

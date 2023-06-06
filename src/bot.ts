@@ -5,7 +5,7 @@ import { filter } from './filter.ts'
 import { fromGrammyCtx } from './message.ts'
 
 export const createBot = (config: ProcessedConfig, botToken: string) => {
-  const { chats } = config
+  const { chats, timeout } = config
   const bot = new Bot(botToken)
 
   const appliedFilter = filter(config)
@@ -16,13 +16,13 @@ export const createBot = (config: ProcessedConfig, botToken: string) => {
     }
   })
 
-  bot.on('message', async (ctx) => {
+  bot.on('message', (ctx) => {
     const message = fromGrammyCtx(ctx)
 
     const filtered = appliedFilter(message)
 
     if (filtered.isBanned) {
-      await ctx.deleteMessage()
+      setTimeout(() => ctx.deleteMessage(), timeout * 1000)
     }
   })
 

@@ -7,6 +7,7 @@ import { processConfig } from 'src/config.ts'
 import suite from './suite.json' assert { type: 'json' }
 
 const TRIVIAL_CONFIG = processConfig({
+  timeout: 0,
   chats: [],
   banWords: suite.bannedWords,
 })
