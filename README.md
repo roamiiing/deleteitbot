@@ -26,6 +26,8 @@ In the `./config` folder create a `deleteit.yaml` file with the following
 content:
 
 ```yaml
+timeout: 10
+
 chats:
     - -1234567890
 
@@ -37,6 +39,12 @@ banWords:
 
 The `chats` list contains the chat IDs that the bot will monitor. You can obtain
 a chat ID by talking to [@userinfobot](https://t.me/userinfobot).
+
+The `timeout` parameter is the number of seconds the bot will wait before
+deleting a message that contains a banned word.
+
+The `banWords` list contains the words that the bot will look for in messages.
+If a message contains any of these words, the bot will delete it.
 
 In the `.env` file add the following:
 
