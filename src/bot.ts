@@ -16,14 +16,18 @@ export const createBot = (config: ProcessedConfig, botToken: string) => {
     }
   })
 
-  bot.on('message', (ctx) => {
+  bot.on('message', async (ctx) => {
     const message = fromGrammyCtx(ctx)
 
     const filtered = appliedFilter(message)
 
-    if (filtered.isBanned) {
-      setTimeout(() => ctx.deleteMessage(), timeout * 1000)
+    if (!filtered.isBanned) {
+      return
     }
+
+    await ctx.react('👎')
+
+    setTimeout(() => ctx.deleteMessage(), timeout * 1000)
   })
 
   return bot
