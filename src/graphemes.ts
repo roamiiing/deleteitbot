@@ -10,8 +10,8 @@ import {
   toRegExp,
   zeroOrMore,
 } from './regex.ts'
-import cyrillicMap from './graphemes/cyrillic.json' assert { type: 'json' }
-import latinMap from './graphemes/latin.json' assert { type: 'json' }
+import cyrillicMap from './graphemes/cyrillic.json' with { type: 'json' }
+import latinMap from './graphemes/latin.json' with { type: 'json' }
 
 const unique = <T>(value: T, index: number, array: T[]) =>
   array.indexOf(value) === index

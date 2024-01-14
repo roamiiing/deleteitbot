@@ -4,7 +4,7 @@ import { assert, assertEquals } from 'std/testing/asserts.ts'
 import { filter } from 'src/filter.ts'
 import { processConfig } from 'src/config.ts'
 
-import suite from './suite.json' assert { type: 'json' }
+import suite from './suite.json' with { type: 'json' }
 
 const TRIVIAL_CONFIG = processConfig({
   timeout: 0,
