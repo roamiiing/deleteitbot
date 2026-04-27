@@ -1,0 +1,88 @@
+import type { DeleteItRepository } from "./repository";
+import type { MatchResult } from "./filter";
+
+export type TextFilter = {
+  match(text: string): MatchResult | undefined;
+};
+
+export type TelegramApi = {
+  deleteMessage(chatId: number, messageId: number): Promise<unknown>;
+  getChatMember(chatId: number, userId: number): Promise<{ status: string }>;
+};
+
+export class DeleteItService {
+  constructor(
+    private readonly repo: DeleteItRepository,
+    private readonly filter: TextFilter,
+    private readonly options: { deleteDelaySeconds: number; maxAttempts?: number; now?: () => number },
+  ) {}
+
+  handleMessage(input: { chatId: number; messageId: number; text?: string; caption?: string }) {
+    const content = input.text ?? input.caption;
+    if (!content) return undefined;
+
+    const match = this.filter.match(content);
+    if (!match) return undefined;
+
+    const now = this.now();
+    this.repo.upsertQueue({
+      chatId: input.chatId,
+      messageId: input.messageId,
+      matchedEntry: match.matchedEntry,
+      detectedAt: now,
+      deleteAfter: now + this.options.deleteDelaySeconds,
+    });
+
+    return { react: "👾" as const, matchedEntry: match.matchedEntry };
+  }
+
+  async handleReaction(input: { chatId: number; messageId: number; userId?: number; hasDeleteItReaction: boolean }, api: TelegramApi) {
+    if (!input.userId) return { ignored: "anonymous" as const };
+
+    const member = await api.getChatMember(input.chatId, input.userId);
+    if (member.status !== "creator" && member.status !== "administrator") return { ignored: "non-admin" as const };
+
+    if (input.hasDeleteItReaction) {
+      this.repo.addVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId, createdAt: this.now() });
+      return { vetoed: true as const };
+    }
+
+    this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
+    return { vetoed: false as const };
+  }
+
+  async sweep(api: Pick<TelegramApi, "deleteMessage">, limit = 50) {
+    const now = this.now();
+    const rows = this.repo.findDue(now, limit);
+    const results: Array<{ chatId: number; messageId: number; status: "deleted" | "failed" | "retry" }> = [];
+
+    for (const row of rows) {
+      try {
+        await api.deleteMessage(row.chatId, row.messageId);
+        this.repo.markDeleted(row, this.now());
+        results.push({ chatId: row.chatId, messageId: row.messageId, status: "deleted" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const permanent = isPermanentDeleteFailure(message) || row.attempts + 1 >= (this.options.maxAttempts ?? 5);
+        this.repo.markFailure(row, message, this.now(), permanent);
+        results.push({ chatId: row.chatId, messageId: row.messageId, status: permanent ? "failed" : "retry" });
+      }
+    }
+
+    return results;
+  }
+
+  private now() {
+    return Math.floor((this.options.now?.() ?? Date.now()) / 1000);
+  }
+}
+
+export function isPermanentDeleteFailure(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("message to delete not found") ||
+    normalized.includes("message can't be deleted") ||
+    normalized.includes("message can not be deleted") ||
+    normalized.includes("not enough rights")
+  );
+}

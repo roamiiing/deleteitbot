@@ -1,0 +1,18 @@
+services:
+  deleteitbot:
+    build: .
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      WORDS_URL: ${WORDS_URL}
+      DATABASE_URL: file:/app/data/deleteitbot.sqlite
+      DELETE_DELAY_SECONDS: ${DELETE_DELAY_SECONDS:-3600}
+      SWEEP_INTERVAL_SECONDS: ${SWEEP_INTERVAL_SECONDS:-60}
+      # HTTPS_PROXY: http://proxy:3128
+      # HTTP_PROXY: http://proxy:3128
+      # NO_PROXY: localhost,127.0.0.1
+    volumes:
+      - deleteitbot-data:/app/data
+
+volumes:
+  deleteitbot-data:
