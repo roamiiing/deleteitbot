@@ -120,6 +120,60 @@ test("sweep respects batch limit", async () => {
   expect(repo.getQueueRow(100, 12)!.status).toBe("pending");
 });
 
+test("force purge deletes pending messages before delete_after", async () => {
+  queue(10);
+  const telegram = api();
+
+  expect(await service.forcePurgePending(100, telegram)).toEqual({ deleted: 1, failed: 0, retried: 0 });
+  expect(telegram.deleted).toEqual([[100, 10]]);
+  expect(repo.getQueueRow(100, 10)!.status).toBe("deleted");
+});
+
+test("force purge only deletes pending messages from the requested chat", async () => {
+  queue(10, "bad", 100);
+  queue(20, "bad", 200);
+  const telegram = api();
+
+  expect(await service.forcePurgePending(100, telegram)).toEqual({ deleted: 1, failed: 0, retried: 0 });
+  expect(telegram.deleted).toEqual([[100, 10]]);
+  expect(repo.getQueueRow(100, 10)!.status).toBe("deleted");
+  expect(repo.getQueueRow(200, 20)!.status).toBe("pending");
+});
+
+test("force purge respects admin vetoes", async () => {
+  queue(10);
+  queue(11);
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
+  const telegram = api();
+
+  expect(await service.forcePurgePending(100, telegram)).toEqual({ deleted: 1, failed: 0, retried: 0 });
+  expect(telegram.deleted).toEqual([[100, 11]]);
+  expect(repo.getQueueRow(100, 10)!.status).toBe("pending");
+  expect(repo.getQueueRow(100, 11)!.status).toBe("deleted");
+});
+
+test("force purge continues across batches until no eligible pending rows remain", async () => {
+  queue(10);
+  queue(11);
+  queue(12);
+  const telegram = api();
+
+  expect(await service.forcePurgePending(100, telegram, { limitPerBatch: 2 })).toEqual({ deleted: 3, failed: 0, retried: 0 });
+  expect(telegram.deleted).toEqual([
+    [100, 10],
+    [100, 11],
+    [100, 12],
+  ]);
+});
+
+test("force purge records permanent failures", async () => {
+  queue(10);
+  const telegram = api("administrator", new Error("Bad Request: message to delete not found"));
+
+  expect(await service.forcePurgePending(100, telegram)).toEqual({ deleted: 0, failed: 1, retried: 0 });
+  expect(repo.getQueueRow(100, 10)!.status).toBe("failed");
+});
+
 test("due messages are skipped while an admin veto exists", async () => {
   service.handleMessage({ chatId: 100, messageId: 10, text: "bad" });
   await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());

@@ -85,6 +85,26 @@ export class DeleteItRepository {
       .all();
   }
 
+  findPendingForChat(chatId: number, limit = 50) {
+    return this.db
+      .select()
+      .from(deletionQueue)
+      .where(
+        and(
+          eq(deletionQueue.chatId, chatId),
+          eq(deletionQueue.status, "pending"),
+          notExists(
+            this.db
+              .select({ one: sql`1` })
+              .from(adminVetoes)
+              .where(and(eq(adminVetoes.chatId, deletionQueue.chatId), eq(adminVetoes.messageId, deletionQueue.messageId))),
+          ),
+        ),
+      )
+      .limit(limit)
+      .all();
+  }
+
   markDeleted(row: Pick<QueueRow, "chatId" | "messageId">, now: number) {
     this.db
       .update(deletionQueue)
