@@ -72,6 +72,51 @@ export class DeleteItService {
     return results;
   }
 
+  async isAdmin(chatId: number, userId: number, api: Pick<TelegramApi, "getChatMember">) {
+    const member = await api.getChatMember(chatId, userId);
+    return member.status === "creator" || member.status === "administrator";
+  }
+
+  async forcePurgePending(
+    chatId: number,
+    api: Pick<TelegramApi, "deleteMessage">,
+    options?: { limitPerBatch?: number },
+  ): Promise<{ deleted: number; failed: number; retried: number }> {
+    const limitPerBatch = options?.limitPerBatch ?? 50;
+    const seen = new Set<string>();
+    let deleted = 0;
+    let failed = 0;
+    let retried = 0;
+
+    while (true) {
+      const rows = this.repo.findPendingForChat(chatId, limitPerBatch);
+      if (rows.length === 0) break;
+
+      // Prevent infinite loops if transient failures remain `pending` and are re-selected.
+      if (rows.every((row: { chatId: number; messageId: number }) => seen.has(queueKey(row)))) break;
+
+      for (const row of rows) {
+        const key = queueKey(row);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        try {
+          await api.deleteMessage(row.chatId, row.messageId);
+          this.repo.markDeleted(row, this.now());
+          deleted += 1;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const permanent = isPermanentDeleteFailure(message) || row.attempts + 1 >= (this.options.maxAttempts ?? 5);
+          this.repo.markFailure(row, message, this.now(), permanent);
+          if (permanent) failed += 1;
+          else retried += 1;
+        }
+      }
+    }
+
+    return { deleted, failed, retried };
+  }
+
   private now() {
     return Math.floor((this.options.now?.() ?? Date.now()) / 1000);
   }
@@ -85,4 +130,8 @@ export function isPermanentDeleteFailure(message: string) {
     normalized.includes("message can not be deleted") ||
     normalized.includes("not enough rights")
   );
+}
+
+function queueKey(row: { chatId: number; messageId: number }) {
+  return `${row.chatId}:${row.messageId}`;
 }
