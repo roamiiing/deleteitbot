@@ -5,7 +5,7 @@ import { migrate } from "./db/migrate";
 import { createFilter } from "./filter";
 import { baseFetchConfig } from "./proxy";
 import { DeleteItRepository } from "./repository";
-import { DeleteItService } from "./service";
+import { DELETE_REACTION, DeleteItService, VETO_REACTION } from "./service";
 
 export const ALLOWED_UPDATES = ["message", "edited_message", "message_reaction", "callback_query"] as const;
 const FORCE_PURGE_CALLBACK_PREFIX = "fp";
@@ -83,7 +83,7 @@ export function createBot(input: {
       text: "text" in ctx.message ? ctx.message.text : undefined,
       caption: "caption" in ctx.message ? ctx.message.caption : undefined,
     });
-    if (action) await ctx.react(action.react);
+    if (action) await ctx.api.setMessageReaction(ctx.chat.id, ctx.message.message_id, emojiReactions(action.reactions));
   });
 
   bot.on(["edited_message:text", "edited_message:caption"], async (ctx) => {
@@ -98,21 +98,26 @@ export function createBot(input: {
     await ctx.api.setMessageReaction(
       ctx.chat.id,
       ctx.editedMessage.message_id,
-      "clearReaction" in action ? [] : [{ type: "emoji", emoji: action.react }],
+      "clearReaction" in action ? [] : emojiReactions(action.reactions),
     );
   });
 
   bot.on("message_reaction", async (ctx) => {
     const reaction = ctx.update.message_reaction;
-    await service.handleReaction(
+    const action = await service.handleReaction(
       {
         chatId: reaction.chat.id,
         messageId: reaction.message_id,
         userId: reaction.user?.id,
-        hasDeleteItReaction: hasEmojiReaction(reaction.new_reaction, "👾"),
+        userIsBot: reaction.user?.is_bot,
+        hasDeleteReaction: hasEmojiReaction(reaction.new_reaction, DELETE_REACTION),
+        hasVetoReaction: hasEmojiReaction(reaction.new_reaction, VETO_REACTION),
       },
       ctx.api,
     );
+    if (action.reactions) {
+      await ctx.api.setMessageReaction(reaction.chat.id, reaction.message_id, emojiReactions(action.reactions));
+    }
   });
 
   const interval = setInterval(() => {
@@ -125,6 +130,10 @@ export function createBot(input: {
 
 export function hasEmojiReaction(reactions: Array<{ type: string; emoji?: string }>, emoji: string) {
   return reactions.some((reaction) => reaction.type === "emoji" && reaction.emoji === emoji);
+}
+
+function emojiReactions(reactions: ReadonlyArray<typeof DELETE_REACTION | typeof VETO_REACTION>) {
+  return reactions.map((emoji) => ({ type: "emoji" as const, emoji }));
 }
 
 export function createForcePurgeCallbackData(chatId: number, now = Math.floor(Date.now() / 1000)) {

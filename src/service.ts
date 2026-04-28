@@ -12,6 +12,10 @@ export type TelegramApi = {
 
 type MessageContentInput = { chatId: number; messageId: number; text?: string; caption?: string };
 
+export const DELETE_REACTION = "👾" as const;
+export const VETO_REACTION = "🕊" as const;
+export const MANUAL_REACTION_MATCH = "manual reaction";
+
 export class DeleteItService {
   constructor(
     private readonly repo: DeleteItRepository,
@@ -22,13 +26,13 @@ export class DeleteItService {
   handleMessage(input: MessageContentInput) {
     const result = this.handleContent(input, { clearPendingWhenClean: false });
     if (!result?.matchedEntry) return undefined;
-    return { react: "👾" as const, matchedEntry: result.matchedEntry };
+    return { reactions: deletionReactions(), matchedEntry: result.matchedEntry };
   }
 
   handleEditedMessage(input: MessageContentInput) {
     const result = this.handleContent(input, { clearPendingWhenClean: true });
     if (!result) return undefined;
-    if (result.matchedEntry) return { react: "👾" as const, matchedEntry: result.matchedEntry };
+    if (result.matchedEntry) return { reactions: deletionReactions(), matchedEntry: result.matchedEntry };
     return { clearReaction: true as const, cleared: result.cleared };
   }
 
@@ -54,18 +58,47 @@ export class DeleteItService {
     return { matchedEntry: match.matchedEntry };
   }
 
-  async handleReaction(input: { chatId: number; messageId: number; userId?: number; hasDeleteItReaction: boolean }, api: TelegramApi) {
+  async handleReaction(
+    input: {
+      chatId: number;
+      messageId: number;
+      userId?: number;
+      userIsBot?: boolean;
+      hasDeleteReaction?: boolean;
+      hasVetoReaction?: boolean;
+    },
+    api: TelegramApi,
+  ) {
     if (!input.userId) return { ignored: "anonymous" as const };
+    if (input.userIsBot) return { ignored: "bot" as const };
 
     const member = await api.getChatMember(input.chatId, input.userId);
     if (member.status !== "creator" && member.status !== "administrator") return { ignored: "non-admin" as const };
 
-    if (input.hasDeleteItReaction) {
+    if (input.hasVetoReaction) {
+      if (!this.repo.getQueueRow(input.chatId, input.messageId)) return { ignored: "not-queued" as const };
+
       this.repo.addVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId, createdAt: this.now() });
-      return { vetoed: true as const };
+      return { vetoed: true as const, reactions: vetoReactions() };
+    }
+
+    if (input.hasDeleteReaction) {
+      const now = this.now();
+      this.repo.upsertQueue({
+        chatId: input.chatId,
+        messageId: input.messageId,
+        matchedEntry: MANUAL_REACTION_MATCH,
+        detectedAt: now,
+        deleteAfter: now + this.options.deleteDelaySeconds,
+      });
+      return { flagged: true as const, reactions: deletionReactions() };
     }
 
     this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
+    if (this.repo.getQueueRow(input.chatId, input.messageId)) {
+      return { vetoed: false as const, reactions: deletionReactions() };
+    }
+
     return { vetoed: false as const };
   }
 
@@ -152,4 +185,12 @@ export function isPermanentDeleteFailure(message: string) {
 
 function queueKey(row: { chatId: number; messageId: number }) {
   return `${row.chatId}:${row.messageId}`;
+}
+
+function deletionReactions() {
+  return [DELETE_REACTION] as const;
+}
+
+function vetoReactions() {
+  return [VETO_REACTION] as const;
 }
