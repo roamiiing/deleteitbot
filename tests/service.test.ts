@@ -2,12 +2,12 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALLOWED_UPDATES } from "../src/bot";
+import { ALLOWED_UPDATES, hasEmojiReaction } from "../src/bot";
 import { createDb } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { createFilter } from "../src/filter";
 import { DeleteItRepository } from "../src/repository";
-import { DeleteItService, type TelegramApi } from "../src/service";
+import { DELETE_REACTION, DeleteItService, MANUAL_REACTION_MATCH, VETO_REACTION, type TelegramApi } from "../src/service";
 
 let dir: string;
 let repo: DeleteItRepository;
@@ -42,13 +42,13 @@ function api(status = "administrator", fail?: Error): TelegramApi & { deleted: A
 
 function queue(messageId: number, text = "bad", chatId = 100) {
   const action = service.handleMessage({ chatId, messageId, text });
-  expect(action).toEqual({ react: "👾", matchedEntry: "bad" });
+  expect(action).toEqual({ reactions: [DELETE_REACTION], matchedEntry: "bad" });
 }
 
 test("banned message queues deletion and reacts", () => {
   const action = service.handleMessage({ chatId: 100, messageId: 10, text: "this is bad" });
 
-  expect(action).toEqual({ react: "👾", matchedEntry: "bad" });
+  expect(action).toEqual({ reactions: [DELETE_REACTION], matchedEntry: "bad" });
   const row = repo.getQueueRow(100, 10)!;
   expect(row.deleteAfter).toBe(1_700_000_060);
   expect(row.matchedWord).toBe("bad");
@@ -58,7 +58,7 @@ test("banned message queues deletion and reacts", () => {
 test("caption is queued the same way as text", () => {
   const action = service.handleMessage({ chatId: 100, messageId: 10, caption: "photo caption with bad word" });
 
-  expect(action).toEqual({ react: "👾", matchedEntry: "bad" });
+  expect(action).toEqual({ reactions: [DELETE_REACTION], matchedEntry: "bad" });
   expect(repo.getQueueRow(100, 10)!.deleteAfter).toBe(1_700_000_060);
 });
 
@@ -67,7 +67,7 @@ test("queue stores the exact dictionary entry that triggered the ban, not the ma
 
   const action = entryService.handleMessage({ chatId: 100, messageId: 10, text: "тут Р0СК0МНАДЗ0Р" });
 
-  expect(action).toEqual({ react: "👾", matchedEntry: "роскомнадзор" });
+  expect(action).toEqual({ reactions: [DELETE_REACTION], matchedEntry: "роскомнадзор" });
   expect(repo.getQueueRow(100, 10)!.matchedWord).toBe("роскомнадзор");
 });
 
@@ -79,7 +79,7 @@ test("clean message does not create a queue row or reaction", () => {
 test("edited banned message queues deletion and requests a reaction", () => {
   const action = service.handleEditedMessage({ chatId: 100, messageId: 10, text: "edited into bad content" });
 
-  expect(action).toEqual({ react: "👾", matchedEntry: "bad" });
+  expect(action).toEqual({ reactions: [DELETE_REACTION], matchedEntry: "bad" });
   const row = repo.getQueueRow(100, 10)!;
   expect(row.deleteAfter).toBe(1_700_000_060);
   expect(row.matchedWord).toBe("bad");
@@ -100,7 +100,7 @@ test("clean edit removes pending deletion and prevents later sweep", async () =>
 
 test("clean edit removes stale admin veto before a later banned edit", async () => {
   queue(10);
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api());
   expect(repo.countVetoes(100, 10)).toBe(1);
 
   expect(service.handleEditedMessage({ chatId: 100, messageId: 10, text: "clean now" })).toEqual({ clearReaction: true, cleared: true });
@@ -182,7 +182,7 @@ test("force purge only deletes pending messages from the requested chat", async 
 test("force purge respects admin vetoes", async () => {
   queue(10);
   queue(11);
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api());
   const telegram = api();
 
   expect(await service.forcePurgePending(100, telegram)).toEqual({ deleted: 1, failed: 0, retried: 0 });
@@ -215,7 +215,7 @@ test("force purge records permanent failures", async () => {
 
 test("due messages are skipped while an admin veto exists", async () => {
   service.handleMessage({ chatId: 100, messageId: 10, text: "bad" });
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api());
   nowMs += 61_000;
   const telegram = api();
 
@@ -225,9 +225,9 @@ test("due messages are skipped while an admin veto exists", async () => {
 
 test("deleting becomes eligible again after veto removal", async () => {
   service.handleMessage({ chatId: 100, messageId: 10, text: "bad" });
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api());
   nowMs += 61_000;
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: false }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: false }, api());
   const telegram = api();
 
   expect(await service.sweep(telegram)).toEqual([{ chatId: 100, messageId: 10, status: "deleted" }]);
@@ -237,30 +237,69 @@ test("deleting becomes eligible again after veto removal", async () => {
 
 test("multiple admin vetoes keep deletion paused until all are removed", async () => {
   service.handleMessage({ chatId: 100, messageId: 10, text: "bad" });
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 2, hasDeleteItReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 2, hasVetoReaction: true }, api());
   nowMs += 61_000;
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: false }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: false }, api());
 
   expect(await service.sweep(api())).toEqual([]);
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 2, hasDeleteItReaction: false }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 2, hasVetoReaction: false }, api());
   expect(await service.sweep(api())).toEqual([{ chatId: 100, messageId: 10, status: "deleted" }]);
 });
 
 test("non-admin reaction does not affect deletion", async () => {
   service.handleMessage({ chatId: 100, messageId: 10, text: "bad" });
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api("member"));
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api("member"));
   nowMs += 61_000;
   const telegram = api();
 
   expect(await service.sweep(telegram)).toEqual([{ chatId: 100, messageId: 10, status: "deleted" }]);
 });
 
-test("admin reaction creates and removes veto", async () => {
-  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api())).toEqual({ vetoed: true });
+test("admin veto reaction creates and removes veto", async () => {
+  queue(10);
+
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api())).toEqual({
+    vetoed: true,
+    reactions: [VETO_REACTION],
+  });
   expect(repo.countVetoes(100, 10)).toBe(1);
-  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: false }, api())).toEqual({ vetoed: false });
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: false }, api())).toEqual({
+    vetoed: false,
+    reactions: [DELETE_REACTION],
+  });
   expect(repo.countVetoes(100, 10)).toBe(0);
+});
+
+test("admin veto reaction on an unsuspected message is ignored", async () => {
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api())).toEqual({
+    ignored: "not-queued",
+  });
+  expect(repo.countVetoes(100, 10)).toBe(0);
+});
+
+test("admin delete reaction manually queues deletion and bot reactions", async () => {
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteReaction: true }, api())).toEqual({
+    flagged: true,
+    reactions: [DELETE_REACTION],
+  });
+
+  const row = repo.getQueueRow(100, 10)!;
+  expect(row.deleteAfter).toBe(1_700_000_060);
+  expect(row.matchedWord).toBe(MANUAL_REACTION_MATCH);
+  expect(row.status).toBe("pending");
+});
+
+test("delete reaction is not treated as veto", async () => {
+  const reactions = [{ type: "emoji", emoji: DELETE_REACTION }];
+
+  expect(hasEmojiReaction(reactions, VETO_REACTION)).toBe(false);
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: false }, api())).toEqual({ vetoed: false });
+  expect(repo.countVetoes(100, 10)).toBe(0);
+});
+
+test("removing delete reaction does not request bot reaction changes", async () => {
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1 }, api())).toEqual({ vetoed: false });
 });
 
 test("anonymous reaction is ignored and does not call getChatMember", async () => {
@@ -273,14 +312,33 @@ test("anonymous reaction is ignored and does not call getChatMember", async () =
     async deleteMessage() {},
   };
 
-  expect(await service.handleReaction({ chatId: 100, messageId: 10, hasDeleteItReaction: true }, telegram)).toEqual({ ignored: "anonymous" });
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, hasVetoReaction: true }, telegram)).toEqual({ ignored: "anonymous" });
+  expect(getChatMemberCalls).toBe(0);
+  expect(repo.countVetoes(100, 10)).toBe(0);
+});
+
+test("bot reaction is ignored and does not call getChatMember", async () => {
+  let getChatMemberCalls = 0;
+  const telegram: TelegramApi = {
+    async getChatMember() {
+      getChatMemberCalls += 1;
+      return { status: "administrator" };
+    },
+    async deleteMessage() {},
+  };
+
+  expect(
+    await service.handleReaction({ chatId: 100, messageId: 10, userId: 999, userIsBot: true, hasVetoReaction: true }, telegram),
+  ).toEqual({ ignored: "bot" });
   expect(getChatMemberCalls).toBe(0);
   expect(repo.countVetoes(100, 10)).toBe(0);
 });
 
 test("admin veto is idempotent for repeated reaction updates", async () => {
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
-  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
+  queue(10);
+
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasVetoReaction: true }, api());
 
   expect(repo.countVetoes(100, 10)).toBe(1);
 });
