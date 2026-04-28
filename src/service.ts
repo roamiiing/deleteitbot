@@ -10,6 +10,8 @@ export type TelegramApi = {
   getChatMember(chatId: number, userId: number): Promise<{ status: string }>;
 };
 
+type MessageContentInput = { chatId: number; messageId: number; text?: string; caption?: string };
+
 export class DeleteItService {
   constructor(
     private readonly repo: DeleteItRepository,
@@ -17,12 +19,28 @@ export class DeleteItService {
     private readonly options: { deleteDelaySeconds: number; maxAttempts?: number; now?: () => number },
   ) {}
 
-  handleMessage(input: { chatId: number; messageId: number; text?: string; caption?: string }) {
+  handleMessage(input: MessageContentInput) {
+    const result = this.handleContent(input, { clearPendingWhenClean: false });
+    if (!result?.matchedEntry) return undefined;
+    return { react: "👾" as const, matchedEntry: result.matchedEntry };
+  }
+
+  handleEditedMessage(input: MessageContentInput) {
+    const result = this.handleContent(input, { clearPendingWhenClean: true });
+    if (!result) return undefined;
+    if (result.matchedEntry) return { react: "👾" as const, matchedEntry: result.matchedEntry };
+    return { clearReaction: true as const, cleared: result.cleared };
+  }
+
+  private handleContent(input: MessageContentInput, options: { clearPendingWhenClean: boolean }) {
     const content = input.text ?? input.caption;
     if (!content) return undefined;
 
     const match = this.filter.match(content);
-    if (!match) return undefined;
+    if (!match) {
+      if (!options.clearPendingWhenClean) return undefined;
+      return { cleared: this.repo.removePendingQueueRow({ chatId: input.chatId, messageId: input.messageId }) };
+    }
 
     const now = this.now();
     this.repo.upsertQueue({
@@ -33,7 +51,7 @@ export class DeleteItService {
       deleteAfter: now + this.options.deleteDelaySeconds,
     });
 
-    return { react: "👾" as const, matchedEntry: match.matchedEntry };
+    return { matchedEntry: match.matchedEntry };
   }
 
   async handleReaction(input: { chatId: number; messageId: number; userId?: number; hasDeleteItReaction: boolean }, api: TelegramApi) {
