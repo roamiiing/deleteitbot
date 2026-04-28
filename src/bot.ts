@@ -7,7 +7,7 @@ import { baseFetchConfig } from "./proxy";
 import { DeleteItRepository } from "./repository";
 import { DeleteItService } from "./service";
 
-export const ALLOWED_UPDATES = ["message", "message_reaction", "callback_query"] as const;
+export const ALLOWED_UPDATES = ["message", "edited_message", "message_reaction", "callback_query"] as const;
 const FORCE_PURGE_CALLBACK_PREFIX = "fp";
 
 export function createBot(input: {
@@ -84,6 +84,22 @@ export function createBot(input: {
       caption: "caption" in ctx.message ? ctx.message.caption : undefined,
     });
     if (action) await ctx.react(action.react);
+  });
+
+  bot.on(["edited_message:text", "edited_message:caption"], async (ctx) => {
+    const action = service.handleEditedMessage({
+      chatId: ctx.chat.id,
+      messageId: ctx.editedMessage.message_id,
+      text: "text" in ctx.editedMessage ? ctx.editedMessage.text : undefined,
+      caption: "caption" in ctx.editedMessage ? ctx.editedMessage.caption : undefined,
+    });
+    if (!action) return;
+
+    await ctx.api.setMessageReaction(
+      ctx.chat.id,
+      ctx.editedMessage.message_id,
+      "clearReaction" in action ? [] : [{ type: "emoji", emoji: action.react }],
+    );
   });
 
   bot.on("message_reaction", async (ctx) => {

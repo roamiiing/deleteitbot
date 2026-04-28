@@ -35,6 +35,39 @@ export class DeleteItRepository {
       .get();
   }
 
+  removePendingQueueRow(input: { chatId: number; messageId: number }) {
+    const row = this.db
+      .select({ status: deletionQueue.status })
+      .from(deletionQueue)
+      .where(
+        and(
+          eq(deletionQueue.chatId, input.chatId),
+          eq(deletionQueue.messageId, input.messageId),
+          eq(deletionQueue.status, "pending"),
+        ),
+      )
+      .get();
+
+    if (!row) return false;
+
+    this.db
+      .delete(adminVetoes)
+      .where(and(eq(adminVetoes.chatId, input.chatId), eq(adminVetoes.messageId, input.messageId)))
+      .run();
+    this.db
+      .delete(deletionQueue)
+      .where(
+        and(
+          eq(deletionQueue.chatId, input.chatId),
+          eq(deletionQueue.messageId, input.messageId),
+          eq(deletionQueue.status, "pending"),
+        ),
+      )
+      .run();
+
+    return true;
+  }
+
   addVeto(input: { chatId: number; messageId: number; adminUserId: number; createdAt: number }) {
     this.db
       .insert(adminVetoes)

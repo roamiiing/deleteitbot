@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ALLOWED_UPDATES } from "../src/bot";
 import { createDb } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { createFilter } from "../src/filter";
@@ -73,6 +74,44 @@ test("queue stores the exact dictionary entry that triggered the ban, not the ma
 test("clean message does not create a queue row or reaction", () => {
   expect(service.handleMessage({ chatId: 100, messageId: 10, text: "clean message" })).toBeUndefined();
   expect(repo.getQueueRow(100, 10)).toBeUndefined();
+});
+
+test("edited banned message queues deletion and requests a reaction", () => {
+  const action = service.handleEditedMessage({ chatId: 100, messageId: 10, text: "edited into bad content" });
+
+  expect(action).toEqual({ react: "👾", matchedEntry: "bad" });
+  const row = repo.getQueueRow(100, 10)!;
+  expect(row.deleteAfter).toBe(1_700_000_060);
+  expect(row.matchedWord).toBe("bad");
+  expect(row.status).toBe("pending");
+});
+
+test("clean edit removes pending deletion and prevents later sweep", async () => {
+  queue(10);
+
+  expect(service.handleEditedMessage({ chatId: 100, messageId: 10, text: "clean now" })).toEqual({ clearReaction: true, cleared: true });
+  expect(repo.getQueueRow(100, 10)).toBeUndefined();
+
+  nowMs += 60_000;
+  const telegram = api();
+  expect(await service.sweep(telegram)).toEqual([]);
+  expect(telegram.deleted).toEqual([]);
+});
+
+test("clean edit removes stale admin veto before a later banned edit", async () => {
+  queue(10);
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
+  expect(repo.countVetoes(100, 10)).toBe(1);
+
+  expect(service.handleEditedMessage({ chatId: 100, messageId: 10, text: "clean now" })).toEqual({ clearReaction: true, cleared: true });
+  expect(repo.getQueueRow(100, 10)).toBeUndefined();
+  expect(repo.countVetoes(100, 10)).toBe(0);
+
+  service.handleEditedMessage({ chatId: 100, messageId: 10, text: "bad again" });
+  nowMs += 60_000;
+  const telegram = api();
+  expect(await service.sweep(telegram)).toEqual([{ chatId: 100, messageId: 10, status: "deleted" }]);
+  expect(telegram.deleted).toEqual([[100, 10]]);
 });
 
 test("queue upsert is idempotent and keeps original deletion deadline", () => {
@@ -244,6 +283,10 @@ test("admin veto is idempotent for repeated reaction updates", async () => {
   await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteItReaction: true }, api());
 
   expect(repo.countVetoes(100, 10)).toBe(1);
+});
+
+test("bot allowed updates include edited messages", () => {
+  expect(ALLOWED_UPDATES).toContain("edited_message");
 });
 
 test("transient delete failure increments attempts and remains retryable", async () => {
