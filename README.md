@@ -21,6 +21,8 @@ When a text message or caption matches a banned word, the bot queues it for dela
 
 If the bot missed banned content, a chat creator or administrator can react to a plain message with `👾`. The bot then queues that message for delayed deletion and adds its own `👾` reaction. Removing the admin's `👾` reaction does not change the queue; adding `🕊` pauses deletion and removes the bot's `👾` status reaction. A standalone `🕊` on a message the bot has not queued is ignored.
 
+Chat creators and administrators can reply to a message with `/why` to see what queued it for deletion. The bot reports the stored trigger and queue status, including whether deletion is paused by an active `🕊` veto; if Telegram includes the replied message text or caption, it also re-checks the current content and shows the matched fragment when it differs from the stored trigger.
+
 Telegram does not include a user ID for anonymous admin reactions, so anonymous reactions are ignored.
 
 ```bash

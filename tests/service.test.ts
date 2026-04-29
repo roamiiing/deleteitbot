@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALLOWED_UPDATES, hasEmojiReaction } from "../src/bot";
+import { ALLOWED_UPDATES, formatWhyResult, hasEmojiReaction } from "../src/bot";
 import { createDb } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { createFilter } from "../src/filter";
@@ -345,6 +345,64 @@ test("admin veto is idempotent for repeated reaction updates", async () => {
 
 test("bot allowed updates include edited messages", () => {
   expect(ALLOWED_UPDATES).toContain("edited_message");
+});
+
+test("/why formats queued trigger reason", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: "bad", status: "pending", lastError: null },
+      liveMatch: { matchedEntry: "bad", matchedText: "b4d" },
+      hasContent: true,
+    }),
+  ).toBe("Сработало на: bad\nСтатус: ожидает удаления\nНайдено в тексте: b4d");
+});
+
+test("/why does not duplicate identical trigger and matched fragment", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: "арта", status: "pending", lastError: null },
+      liveMatch: { matchedEntry: "арта", matchedText: "арта" },
+      hasContent: true,
+    }),
+  ).toBe("Сработало на: арта\nСтатус: ожидает удаления");
+});
+
+test("/why formats vetoed pending messages as paused", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: "bad", status: "pending", lastError: null },
+      vetoCount: 1,
+      liveMatch: { matchedEntry: "bad", matchedText: "bad" },
+      hasContent: true,
+    }),
+  ).toBe("Сработало на: bad\nСтатус: остановлено админской 🕊 (1)");
+});
+
+test("/why formats manual admin trigger reason", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: MANUAL_REACTION_MATCH, status: "pending", lastError: null },
+      hasContent: false,
+    }),
+  ).toBe("Сработало на: ручная отметка админом 👾\nСтатус: ожидает удаления");
+});
+
+test("/why formats live trigger without a queue row", () => {
+  expect(
+    formatWhyResult({
+      liveMatch: { matchedEntry: "bad", matchedText: "bad" },
+      hasContent: true,
+    }),
+  ).toBe("Сейчас подходит под запретку: bad");
+});
+
+test("/why explains when no trigger reason is found", () => {
+  expect(formatWhyResult({ hasContent: true })).toBe(
+    "Не нашёл причину: сообщения нет в очереди, текущий текст не срабатывает на фильтр.",
+  );
+  expect(formatWhyResult({ hasContent: false })).toBe(
+    "Не нашёл причину в очереди, а Telegram не передал текст или подпись сообщения для повторной проверки.",
+  );
 });
 
 test("transient delete failure increments attempts and remains retryable", async () => {
