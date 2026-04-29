@@ -2,12 +2,12 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALLOWED_UPDATES, hasEmojiReaction } from "../src/bot";
+import { ALLOWED_UPDATES, formatForcePurgeStarted, formatWhyResult, hasEmojiReaction } from "../src/bot";
 import { createDb } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { createFilter } from "../src/filter";
 import { DeleteItRepository } from "../src/repository";
-import { DELETE_REACTION, DeleteItService, MANUAL_REACTION_MATCH, VETO_REACTION, type TelegramApi } from "../src/service";
+import { BOT_MESSAGE_MATCH, DELETE_REACTION, DeleteItService, MANUAL_REACTION_MATCH, VETO_REACTION, type TelegramApi } from "../src/service";
 
 let dir: string;
 let repo: DeleteItRepository;
@@ -168,6 +168,20 @@ test("force purge deletes pending messages before delete_after", async () => {
   expect(repo.getQueueRow(100, 10)!.status).toBe("deleted");
 });
 
+test("force purge deletes queued bot explanation messages", async () => {
+  queue(10);
+  service.queueBotMessageForDeletion({ chatId: 100, messageId: 99 });
+  const telegram = api();
+
+  expect(repo.getQueueRow(100, 99)!.matchedWord).toBe(BOT_MESSAGE_MATCH);
+  expect(await service.forcePurgePending(100, telegram)).toEqual({ deleted: 2, failed: 0, retried: 0 });
+  expect(telegram.deleted).toEqual([
+    [100, 10],
+    [100, 99],
+  ]);
+  expect(repo.getQueueRow(100, 99)!.status).toBe("deleted");
+});
+
 test("force purge only deletes pending messages from the requested chat", async () => {
   queue(10, "bad", 100);
   queue(20, "bad", 200);
@@ -312,6 +326,66 @@ test("admin delete reaction does not override active veto", async () => {
     flagged: true,
   });
   expect(repo.countVetoes(100, 10)).toBe(1);
+});
+
+test("removing manual delete reaction clears pending queue and bot reaction", async () => {
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteReaction: true }, api());
+
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hadDeleteReaction: true }, api())).toEqual({
+    unflagged: true,
+    clearReaction: true,
+    cleared: true,
+  });
+  expect(repo.getQueueRow(100, 10)).toBeUndefined();
+});
+
+test("removing manual delete reaction while veto remains clears queue and vetoes", async () => {
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteReaction: true, hasVetoReaction: true }, api());
+
+  expect(repo.countVetoes(100, 10)).toBe(1);
+  expect(
+    await service.handleReaction(
+      { chatId: 100, messageId: 10, userId: 1, hadDeleteReaction: true, hadVetoReaction: true, hasVetoReaction: true },
+      api(),
+    ),
+  ).toEqual({
+    unflagged: true,
+    clearReaction: true,
+    cleared: true,
+  });
+  expect(repo.getQueueRow(100, 10)).toBeUndefined();
+  expect(repo.countVetoes(100, 10)).toBe(0);
+
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hadVetoReaction: true }, api())).toEqual({
+    vetoed: false,
+  });
+});
+
+test("removing veto while manual delete reaction remains restores bot delete reaction", async () => {
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteReaction: true }, api());
+  await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hasDeleteReaction: true, hasVetoReaction: true }, api());
+
+  expect(
+    await service.handleReaction(
+      { chatId: 100, messageId: 10, userId: 1, hadDeleteReaction: true, hadVetoReaction: true, hasDeleteReaction: true },
+      api(),
+    ),
+  ).toEqual({
+    flagged: true,
+    reactions: [DELETE_REACTION],
+  });
+  expect(repo.countVetoes(100, 10)).toBe(0);
+  expect(repo.getQueueRow(100, 10)!.matchedWord).toBe(MANUAL_REACTION_MATCH);
+});
+
+test("removing delete reaction does not clear a filter queued message", async () => {
+  queue(10);
+
+  expect(await service.handleReaction({ chatId: 100, messageId: 10, userId: 1, hadDeleteReaction: true }, api())).toEqual({
+    vetoed: false,
+    reactions: [DELETE_REACTION],
+  });
   expect(repo.getQueueRow(100, 10)!.status).toBe("pending");
 });
 
@@ -372,6 +446,68 @@ test("admin veto is idempotent for repeated reaction updates", async () => {
 
 test("bot allowed updates include edited messages", () => {
   expect(ALLOWED_UPDATES).toContain("edited_message");
+});
+
+test("/force progress message is explicit before purge completes", () => {
+  expect(formatForcePurgeStarted()).toBe("Начал принудительное удаление. Результат появится здесь.");
+});
+
+test("/why formats queued trigger reason", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: "bad", status: "pending", lastError: null },
+      liveMatch: { matchedEntry: "bad", matchedText: "b4d" },
+      hasContent: true,
+    }),
+  ).toBe("Запретка: bad\nСтатус: ожидает удаления\nНайдено в тексте: b4d");
+});
+
+test("/why does not duplicate identical trigger and matched fragment", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: "арта", status: "pending", lastError: null },
+      liveMatch: { matchedEntry: "арта", matchedText: "арта" },
+      hasContent: true,
+    }),
+  ).toBe("Запретка: арта\nСтатус: ожидает удаления");
+});
+
+test("/why formats vetoed pending messages as paused", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: "bad", status: "pending", lastError: null },
+      vetoCount: 1,
+      liveMatch: { matchedEntry: "bad", matchedText: "bad" },
+      hasContent: true,
+    }),
+  ).toBe("Запретка: bad\nСтатус: остановлено админской 🕊 (1)");
+});
+
+test("/why formats manual admin trigger reason", () => {
+  expect(
+    formatWhyResult({
+      row: { matchedWord: MANUAL_REACTION_MATCH, status: "pending", lastError: null },
+      hasContent: false,
+    }),
+  ).toBe("Запретка: ручная отметка админом 👾\nСтатус: ожидает удаления");
+});
+
+test("/why formats live trigger without a queue row", () => {
+  expect(
+    formatWhyResult({
+      liveMatch: { matchedEntry: "bad", matchedText: "bad" },
+      hasContent: true,
+    }),
+  ).toBe("Сейчас подходит под запретку: bad");
+});
+
+test("/why explains when no trigger reason is found", () => {
+  expect(formatWhyResult({ hasContent: true })).toBe(
+    "Не нашёл причину: сообщения нет в очереди, текущий текст не срабатывает на фильтр.",
+  );
+  expect(formatWhyResult({ hasContent: false })).toBe(
+    "Не нашёл причину в очереди, а Telegram не передал текст или подпись сообщения для повторной проверки.",
+  );
 });
 
 test("transient delete failure increments attempts and remains retryable", async () => {

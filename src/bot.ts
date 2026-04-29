@@ -1,14 +1,16 @@
 import { apiThrottler } from "@grammyjs/transformer-throttler";
 import { Bot, InlineKeyboard, type Context } from "grammy";
 import { createDb } from "./db/client";
+import type { QueueRow } from "./db/schema";
 import { migrate } from "./db/migrate";
-import { createFilter } from "./filter";
+import { createFilter, type MatchResult } from "./filter";
 import { baseFetchConfig } from "./proxy";
 import { DeleteItRepository } from "./repository";
-import { DELETE_REACTION, DeleteItService, VETO_REACTION } from "./service";
+import { DELETE_REACTION, DeleteItService, MANUAL_REACTION_MATCH, VETO_REACTION } from "./service";
 
 export const ALLOWED_UPDATES = ["message", "edited_message", "message_reaction", "callback_query"] as const;
 const FORCE_PURGE_CALLBACK_PREFIX = "fp";
+const WHY_ACK_CALLBACK_DATA = "why:ok";
 
 export function createBot(input: {
   token: string;
@@ -42,17 +44,62 @@ export function createBot(input: {
       return;
     }
 
+    if (ctx.message) await deleteMessageQuietly(ctx.api, ctx.chat.id, ctx.message.message_id);
+
     const isAdmin = await service.isAdmin(ctx.chat.id, ctx.from.id, ctx.api);
     if (!isAdmin) {
       const callbackData = createForcePurgeCallbackData(ctx.chat.id);
-      await ctx.reply("Только админ может запустить принудительное удаление. Попросите админа подтвердить:", {
+      const prompt = await ctx.reply("Только админ может запустить принудительное удаление. Попросите админа подтвердить:", {
         reply_markup: new InlineKeyboard().text("Подтвердить удаление (админ)", callbackData),
       });
+      service.queueBotMessageForDeletion({ chatId: ctx.chat.id, messageId: prompt.message_id });
       return;
     }
 
+    const progress = await ctx.reply(formatForcePurgeStarted());
     const result = await service.forcePurgePending(ctx.chat.id, ctx.api);
-    await ctx.reply(formatForcePurgeResult(result));
+    await ctx.api.editMessageText(ctx.chat.id, progress.message_id, formatForcePurgeResult(result), {
+      reply_markup: deleteNotificationKeyboard(),
+    });
+    service.queueBotMessageForDeletion({ chatId: ctx.chat.id, messageId: progress.message_id });
+  });
+
+  bot.command("why", async (ctx) => {
+    if (!ctx.chat || !ctx.from || !ctx.message) {
+      await ctx.reply("Не могу определить чат или пользователя для /why.");
+      return;
+    }
+
+    const isAdmin = await service.isAdmin(ctx.chat.id, ctx.from.id, ctx.api);
+    if (!isAdmin) {
+      await ctx.reply("Только админ может смотреть причину срабатывания.");
+      return;
+    }
+
+    const reply = ctx.message.reply_to_message;
+    if (!reply) {
+      await ctx.reply("Ответьте командой /why на сообщение, которое нужно проверить.");
+      return;
+    }
+
+    const content = getMessageContent(reply);
+    const row = repo.getQueueRow(ctx.chat.id, reply.message_id);
+    const vetoCount = row ? repo.countVetoes(ctx.chat.id, reply.message_id) : 0;
+    const liveMatch = content ? filter.match(content) : undefined;
+    const explanation = await ctx.reply(formatWhyResult({ row, vetoCount, liveMatch, hasContent: Boolean(content) }), {
+      reply_parameters: { message_id: reply.message_id },
+      reply_markup: new InlineKeyboard().text("OK", WHY_ACK_CALLBACK_DATA),
+    });
+    service.queueBotMessageForDeletion({ chatId: ctx.chat.id, messageId: explanation.message_id });
+    await deleteMessageQuietly(ctx.api, ctx.chat.id, ctx.message.message_id);
+  });
+
+  bot.callbackQuery(WHY_ACK_CALLBACK_DATA, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const message = ctx.callbackQuery.message;
+    if (!message) return;
+    repo.removePendingQueueRow({ chatId: message.chat.id, messageId: message.message_id });
+    await deleteMessageQuietly(ctx.api, message.chat.id, message.message_id);
   });
 
   bot.callbackQuery(new RegExp(`^${FORCE_PURGE_CALLBACK_PREFIX}:(-?\\d+):(\\d+)$`), async (ctx) => {
@@ -72,8 +119,12 @@ export function createBot(input: {
     }
 
     await ctx.answerCallbackQuery();
+    const message = ctx.callbackQuery.message;
+    if (message) repo.removePendingQueueRow({ chatId: message.chat.id, messageId: message.message_id });
+    await ctx.editMessageText(formatForcePurgeStarted());
     const result = await service.forcePurgePending(chatId, ctx.api);
-    await ctx.editMessageText(formatForcePurgeResult(result));
+    await ctx.editMessageText(formatForcePurgeResult(result), { reply_markup: deleteNotificationKeyboard() });
+    if (message) service.queueBotMessageForDeletion({ chatId: message.chat.id, messageId: message.message_id });
   });
 
   bot.on(["message:text", "message:caption"], async (ctx) => {
@@ -110,14 +161,17 @@ export function createBot(input: {
         messageId: reaction.message_id,
         userId: reaction.user?.id,
         userIsBot: reaction.user?.is_bot,
-        hasDeleteReaction: hasEmojiReaction(reaction.new_reaction, DELETE_REACTION),
+        hadDeleteReaction: hasEmojiReaction(reaction.old_reaction, DELETE_REACTION),
         hadVetoReaction: hasEmojiReaction(reaction.old_reaction, VETO_REACTION),
+        hasDeleteReaction: hasEmojiReaction(reaction.new_reaction, DELETE_REACTION),
         hasVetoReaction: hasEmojiReaction(reaction.new_reaction, VETO_REACTION),
       },
       ctx.api,
     );
     if (action.reactions) {
       await ctx.api.setMessageReaction(reaction.chat.id, reaction.message_id, emojiReactions(action.reactions));
+    } else if ("clearReaction" in action) {
+      await ctx.api.setMessageReaction(reaction.chat.id, reaction.message_id, []);
     }
   });
 
@@ -137,6 +191,10 @@ function emojiReactions(reactions: ReadonlyArray<typeof DELETE_REACTION | typeof
   return reactions.map((emoji) => ({ type: "emoji" as const, emoji }));
 }
 
+function deleteNotificationKeyboard() {
+  return new InlineKeyboard().text("Ок, удалить уведомление", WHY_ACK_CALLBACK_DATA);
+}
+
 export function createForcePurgeCallbackData(chatId: number, now = Math.floor(Date.now() / 1000)) {
   return `${FORCE_PURGE_CALLBACK_PREFIX}:${chatId}:${now}`;
 }
@@ -148,6 +206,71 @@ export function formatForcePurgeResult(result: { deleted: number; failed: number
   return `Принудительное удаление завершено. ${parts.join(", ")}.`;
 }
 
+export function formatForcePurgeStarted() {
+  return "Начал принудительное удаление. Результат появится здесь.";
+}
+
+export function formatWhyResult(input: {
+  row?: Pick<QueueRow, "matchedWord" | "status" | "lastError">;
+  vetoCount?: number;
+  liveMatch?: MatchResult;
+  hasContent: boolean;
+}) {
+  if (!input.row && !input.liveMatch) {
+    if (!input.hasContent) {
+      return "Не нашёл причину в очереди, а Telegram не передал текст или подпись сообщения для повторной проверки.";
+    }
+    return "Не нашёл причину: сообщения нет в очереди, текущий текст не срабатывает на фильтр.";
+  }
+
+  const lines: string[] = [];
+
+  if (input.row) {
+    lines.push(`Запретка: ${formatMatchedEntry(input.row.matchedWord)}`);
+    lines.push(`Статус: ${formatQueueStatus(input.row.status, input.vetoCount ?? 0)}`);
+    if (input.row.lastError) lines.push(`Последняя ошибка: ${input.row.lastError}`);
+  }
+
+  if (input.liveMatch) {
+    if (!input.row || input.liveMatch.matchedEntry !== input.row.matchedWord) {
+      lines.push(`Сейчас подходит под запретку: ${formatMatchedEntry(input.liveMatch.matchedEntry)}`);
+    }
+    if (input.liveMatch.matchedText !== input.liveMatch.matchedEntry) {
+      lines.push(`Найдено в тексте: ${input.liveMatch.matchedText}`);
+    }
+  } else if (input.row && input.hasContent) {
+    lines.push("Сейчас текст сообщения уже не срабатывает на фильтр.");
+  }
+
+  return lines.join("\n");
+}
+
 export async function startBot(bot: Bot<Context>) {
   await bot.start({ allowed_updates: [...ALLOWED_UPDATES] });
+}
+
+function getMessageContent(message: { text?: string; caption?: string }) {
+  if ("text" in message) return message.text;
+  if ("caption" in message) return message.caption;
+  return undefined;
+}
+
+function formatMatchedEntry(entry: string) {
+  if (entry === MANUAL_REACTION_MATCH) return "ручная отметка админом 👾";
+  return entry;
+}
+
+function formatQueueStatus(status: QueueRow["status"], vetoCount: number) {
+  if (status === "pending" && vetoCount > 0) return `остановлено админской 🕊 (${vetoCount})`;
+  if (status === "pending") return "ожидает удаления";
+  if (status === "deleted") return "уже удалено";
+  return "ошибка удаления";
+}
+
+async function deleteMessageQuietly(api: Pick<Context["api"], "deleteMessage">, chatId: number, messageId: number) {
+  try {
+    await api.deleteMessage(chatId, messageId);
+  } catch {
+    // The message may already be gone, or the bot may lack delete rights.
+  }
 }
