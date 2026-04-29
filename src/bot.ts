@@ -111,6 +111,7 @@ export function createBot(input: {
         userId: reaction.user?.id,
         userIsBot: reaction.user?.is_bot,
         hasDeleteReaction: hasEmojiReaction(reaction.new_reaction, DELETE_REACTION),
+        hadVetoReaction: hasEmojiReaction(reaction.old_reaction, VETO_REACTION),
         hasVetoReaction: hasEmojiReaction(reaction.new_reaction, VETO_REACTION),
       },
       ctx.api,
