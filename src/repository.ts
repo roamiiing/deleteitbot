@@ -1,4 +1,4 @@
-import { and, eq, lte, notExists, sql } from "drizzle-orm";
+import { and, eq, lte, ne, notExists, sql } from "drizzle-orm";
 import type { Db } from "./db/client";
 import { adminVetoes, deletionQueue, type QueueRow } from "./db/schema";
 
@@ -118,22 +118,23 @@ export class DeleteItRepository {
       .all();
   }
 
-  findPendingForChat(chatId: number, limit = 50) {
+  findPendingForChat(chatId: number, limit = 50, options?: { excludeMatchedWord?: string }) {
+    const conditions = [
+      eq(deletionQueue.chatId, chatId),
+      eq(deletionQueue.status, "pending"),
+      notExists(
+        this.db
+          .select({ one: sql`1` })
+          .from(adminVetoes)
+          .where(and(eq(adminVetoes.chatId, deletionQueue.chatId), eq(adminVetoes.messageId, deletionQueue.messageId))),
+      ),
+    ];
+    if (options?.excludeMatchedWord) conditions.push(ne(deletionQueue.matchedWord, options.excludeMatchedWord));
+
     return this.db
       .select()
       .from(deletionQueue)
-      .where(
-        and(
-          eq(deletionQueue.chatId, chatId),
-          eq(deletionQueue.status, "pending"),
-          notExists(
-            this.db
-              .select({ one: sql`1` })
-              .from(adminVetoes)
-              .where(and(eq(adminVetoes.chatId, deletionQueue.chatId), eq(adminVetoes.messageId, deletionQueue.messageId))),
-          ),
-        ),
-      )
+      .where(and(...conditions))
       .limit(limit)
       .all();
   }

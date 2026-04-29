@@ -15,6 +15,7 @@ type MessageContentInput = { chatId: number; messageId: number; text?: string; c
 export const DELETE_REACTION = "👾" as const;
 export const VETO_REACTION = "🕊" as const;
 export const MANUAL_REACTION_MATCH = "manual reaction";
+export const BOT_MESSAGE_MATCH = "bot message";
 
 export class DeleteItService {
   constructor(
@@ -64,6 +65,8 @@ export class DeleteItService {
       messageId: number;
       userId?: number;
       userIsBot?: boolean;
+      hadDeleteReaction?: boolean;
+      hadVetoReaction?: boolean;
       hasDeleteReaction?: boolean;
       hasVetoReaction?: boolean;
     },
@@ -75,11 +78,21 @@ export class DeleteItService {
     const member = await api.getChatMember(input.chatId, input.userId);
     if (member.status !== "creator" && member.status !== "administrator") return { ignored: "non-admin" as const };
 
+    const row = this.repo.getQueueRow(input.chatId, input.messageId);
+    if (row?.matchedWord === MANUAL_REACTION_MATCH && input.hadDeleteReaction && !input.hasDeleteReaction) {
+      const cleared = this.repo.removePendingQueueRow({ chatId: input.chatId, messageId: input.messageId });
+      return { unflagged: true as const, clearReaction: true as const, cleared };
+    }
+
     if (input.hasVetoReaction) {
-      if (!this.repo.getQueueRow(input.chatId, input.messageId)) return { ignored: "not-queued" as const };
+      if (!row) return { ignored: "not-queued" as const };
 
       this.repo.addVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId, createdAt: this.now() });
       return { vetoed: true as const, reactions: vetoReactions() };
+    }
+
+    if (input.hadVetoReaction || input.hasVetoReaction === false) {
+      this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
     }
 
     if (input.hasDeleteReaction) {
@@ -94,7 +107,6 @@ export class DeleteItService {
       return { flagged: true as const, reactions: deletionReactions() };
     }
 
-    this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
     if (this.repo.getQueueRow(input.chatId, input.messageId)) {
       return { vetoed: false as const, reactions: deletionReactions() };
     }
@@ -126,6 +138,17 @@ export class DeleteItService {
   async isAdmin(chatId: number, userId: number, api: Pick<TelegramApi, "getChatMember">) {
     const member = await api.getChatMember(chatId, userId);
     return member.status === "creator" || member.status === "administrator";
+  }
+
+  queueBotMessageForDeletion(input: { chatId: number; messageId: number }) {
+    const now = this.now();
+    this.repo.upsertQueue({
+      chatId: input.chatId,
+      messageId: input.messageId,
+      matchedEntry: BOT_MESSAGE_MATCH,
+      detectedAt: now,
+      deleteAfter: now + this.options.deleteDelaySeconds,
+    });
   }
 
   async forcePurgePending(
