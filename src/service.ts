@@ -65,6 +65,7 @@ export class DeleteItService {
       userId?: number;
       userIsBot?: boolean;
       hasDeleteReaction?: boolean;
+      hadVetoReaction?: boolean;
       hasVetoReaction?: boolean;
     },
     api: TelegramApi,
@@ -75,31 +76,39 @@ export class DeleteItService {
     const member = await api.getChatMember(input.chatId, input.userId);
     if (member.status !== "creator" && member.status !== "administrator") return { ignored: "non-admin" as const };
 
-    if (input.hasVetoReaction) {
+    const addedVetoReaction = !input.hadVetoReaction && input.hasVetoReaction;
+    const removedVetoReaction = input.hadVetoReaction && !input.hasVetoReaction;
+
+    if (addedVetoReaction) {
       if (!this.repo.getQueueRow(input.chatId, input.messageId)) return { ignored: "not-queued" as const };
 
       this.repo.addVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId, createdAt: this.now() });
       return { vetoed: true as const, reactions: vetoReactions() };
     }
 
-    if (input.hasDeleteReaction) {
-      const now = this.now();
-      this.repo.upsertQueue({
-        chatId: input.chatId,
-        messageId: input.messageId,
-        matchedEntry: MANUAL_REACTION_MATCH,
-        detectedAt: now,
-        deleteAfter: now + this.options.deleteDelaySeconds,
-      });
-      return { flagged: true as const, reactions: deletionReactions() };
-    }
-
-    this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
-    if (this.repo.getQueueRow(input.chatId, input.messageId)) {
+    if (removedVetoReaction) {
+      this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
+      if (!this.repo.getQueueRow(input.chatId, input.messageId)) return { vetoed: false as const };
+      if (this.repo.countVetoes(input.chatId, input.messageId) > 0) return { vetoed: false as const };
       return { vetoed: false as const, reactions: deletionReactions() };
     }
 
-    return { vetoed: false as const };
+    if (input.hasDeleteReaction) {
+      if (!this.repo.getQueueRow(input.chatId, input.messageId)) {
+        const now = this.now();
+        this.repo.upsertQueue({
+          chatId: input.chatId,
+          messageId: input.messageId,
+          matchedEntry: MANUAL_REACTION_MATCH,
+          detectedAt: now,
+          deleteAfter: now + this.options.deleteDelaySeconds,
+        });
+      }
+      if (this.repo.countVetoes(input.chatId, input.messageId) > 0) return { flagged: true as const };
+      return { flagged: true as const, reactions: deletionReactions() };
+    }
+
+    return { ignored: "no-reaction-change" as const };
   }
 
   async sweep(api: Pick<TelegramApi, "deleteMessage">, limit = 50) {
