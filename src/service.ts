@@ -1,5 +1,6 @@
 import type { DeleteItRepository } from "./repository";
 import type { MatchResult } from "./filter";
+import type { Telemetry } from "./telemetry";
 
 export type TextFilter = {
   match(text: string): MatchResult | undefined;
@@ -21,7 +22,7 @@ export class DeleteItService {
   constructor(
     private readonly repo: DeleteItRepository,
     private readonly filter: TextFilter,
-    private readonly options: { deleteDelaySeconds: number; maxAttempts?: number; now?: () => number },
+    private readonly options: { deleteDelaySeconds: number; maxAttempts?: number; now?: () => number; telemetry?: Telemetry },
   ) {}
 
   handleMessage(input: MessageContentInput) {
@@ -39,12 +40,20 @@ export class DeleteItService {
 
   private handleContent(input: MessageContentInput, options: { clearPendingWhenClean: boolean }) {
     const content = input.text ?? input.caption;
-    if (!content) return undefined;
+    if (!content) {
+      this.track("message_ignored", { reason: "empty", chatId: input.chatId, messageId: input.messageId });
+      return undefined;
+    }
 
     const match = this.filter.match(content);
     if (!match) {
+<<<<<<< Updated upstream
       if (!options.clearPendingWhenClean) return undefined;
       return { cleared: this.repo.removePendingQueueRow({ chatId: input.chatId, messageId: input.messageId }) };
+=======
+      this.track("message_ignored", { reason: "clean", chatId: input.chatId, messageId: input.messageId });
+      return undefined;
+>>>>>>> Stashed changes
     }
 
     const now = this.now();
@@ -56,6 +65,7 @@ export class DeleteItService {
       deleteAfter: now + this.options.deleteDelaySeconds,
     });
 
+<<<<<<< Updated upstream
     return { matchedEntry: match.matchedEntry };
   }
 
@@ -74,10 +84,25 @@ export class DeleteItService {
   ) {
     if (!input.userId) return { ignored: "anonymous" as const };
     if (input.userIsBot) return { ignored: "bot" as const };
+=======
+    this.track("message_queued", { chatId: input.chatId, messageId: input.messageId, matchedEntry: match.matchedEntry });
+    return { react: "👾" as const, matchedEntry: match.matchedEntry };
+  }
+
+  async handleReaction(input: { chatId: number; messageId: number; userId?: number; hasDeleteItReaction: boolean }, api: TelegramApi) {
+    if (!input.userId) {
+      this.track("reaction_ignored", { reason: "anonymous", chatId: input.chatId, messageId: input.messageId });
+      return { ignored: "anonymous" as const };
+    }
+>>>>>>> Stashed changes
 
     const member = await api.getChatMember(input.chatId, input.userId);
-    if (member.status !== "creator" && member.status !== "administrator") return { ignored: "non-admin" as const };
+    if (member.status !== "creator" && member.status !== "administrator") {
+      this.track("reaction_ignored", { reason: "non-admin", chatId: input.chatId, messageId: input.messageId, userId: input.userId, status: member.status });
+      return { ignored: "non-admin" as const };
+    }
 
+<<<<<<< Updated upstream
     const row = this.repo.getQueueRow(input.chatId, input.messageId);
     const addedVetoReaction = !input.hadVetoReaction && input.hasVetoReaction;
     const removedVetoReaction = input.hadVetoReaction && !input.hasVetoReaction;
@@ -125,6 +150,17 @@ export class DeleteItService {
     }
 
     return { ignored: "no-reaction-change" as const };
+=======
+    if (input.hasDeleteItReaction) {
+      this.repo.addVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId, createdAt: this.now() });
+      this.track("deletion_veto_added", { chatId: input.chatId, messageId: input.messageId, userId: input.userId });
+      return { vetoed: true as const };
+    }
+
+    this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
+    this.track("deletion_veto_removed", { chatId: input.chatId, messageId: input.messageId, userId: input.userId });
+    return { vetoed: false as const };
+>>>>>>> Stashed changes
   }
 
   async sweep(api: Pick<TelegramApi, "deleteMessage">, limit = 50) {
@@ -136,11 +172,13 @@ export class DeleteItService {
       try {
         await api.deleteMessage(row.chatId, row.messageId);
         this.repo.markDeleted(row, this.now());
+        this.track("message_deleted", { chatId: row.chatId, messageId: row.messageId, attempts: row.attempts });
         results.push({ chatId: row.chatId, messageId: row.messageId, status: "deleted" });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const permanent = isPermanentDeleteFailure(message) || row.attempts + 1 >= (this.options.maxAttempts ?? 5);
         this.repo.markFailure(row, message, this.now(), permanent);
+        this.track("message_delete_failed", { chatId: row.chatId, messageId: row.messageId, attempts: row.attempts + 1, permanent, error: message });
         results.push({ chatId: row.chatId, messageId: row.messageId, status: permanent ? "failed" : "retry" });
       }
     }
@@ -206,6 +244,10 @@ export class DeleteItService {
 
   private now() {
     return Math.floor((this.options.now?.() ?? Date.now()) / 1000);
+  }
+
+  private track(eventName: string, eventData: Record<string, unknown>) {
+    this.options.telemetry?.track(eventName, eventData);
   }
 }
 
