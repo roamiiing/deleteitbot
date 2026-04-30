@@ -6,12 +6,8 @@ import { migrate } from "./db/migrate";
 import { createFilter, type MatchResult } from "./filter";
 import { baseFetchConfig } from "./proxy";
 import { DeleteItRepository } from "./repository";
-<<<<<<< Updated upstream
 import { DELETE_REACTION, DeleteItService, MANUAL_REACTION_MATCH, VETO_REACTION } from "./service";
-=======
-import { DeleteItService } from "./service";
 import { createRawTelegramTransformer, createTelemetry, trackIncomingUpdate, type Telemetry } from "./telemetry";
->>>>>>> Stashed changes
 
 export const ALLOWED_UPDATES = ["message", "edited_message", "message_reaction", "callback_query"] as const;
 const FORCE_PURGE_CALLBACK_PREFIX = "fp";
@@ -34,16 +30,13 @@ export function createBot(input: {
   const service = new DeleteItService(repo, filter, { deleteDelaySeconds: input.deleteDelaySeconds, telemetry });
   const fetchConfig = baseFetchConfig();
   const bot = new Bot(input.token, fetchConfig ? { client: { baseFetchConfig: fetchConfig } } : undefined);
-<<<<<<< Updated upstream
   bot.api.config.use(apiThrottler());
-=======
   bot.api.config.use(createRawTelegramTransformer(telemetry, "deleteitbot-raw-tg"));
 
   bot.use(async (ctx, next) => {
     trackIncomingUpdate(telemetry, "deleteitbot-raw-tg", ctx.update);
     await next();
   });
->>>>>>> Stashed changes
 
   bot.catch((error) => {
     console.error("Telegram update failed", {

@@ -8,9 +8,9 @@ services:
       DATABASE_URL: file:/app/data/deleteitbot.sqlite
       DELETE_DELAY_SECONDS: ${DELETE_DELAY_SECONDS:-3600}
       SWEEP_INTERVAL_SECONDS: ${SWEEP_INTERVAL_SECONDS:-60}
-      # HTTPS_PROXY: http://proxy:3128
-      # HTTP_PROXY: http://proxy:3128
-      # NO_PROXY: localhost,127.0.0.1
+      # TG_HTTPS_PROXY: http://proxy:3128
+      # TG_HTTP_PROXY: http://proxy:3128
+      # TG_NO_PROXY: api.telegram.org
     volumes:
       - deleteitbot-data:/app/data
 

@@ -47,13 +47,9 @@ export class DeleteItService {
 
     const match = this.filter.match(content);
     if (!match) {
-<<<<<<< Updated upstream
+      this.track("message_ignored", { reason: "clean", chatId: input.chatId, messageId: input.messageId });
       if (!options.clearPendingWhenClean) return undefined;
       return { cleared: this.repo.removePendingQueueRow({ chatId: input.chatId, messageId: input.messageId }) };
-=======
-      this.track("message_ignored", { reason: "clean", chatId: input.chatId, messageId: input.messageId });
-      return undefined;
->>>>>>> Stashed changes
     }
 
     const now = this.now();
@@ -65,7 +61,7 @@ export class DeleteItService {
       deleteAfter: now + this.options.deleteDelaySeconds,
     });
 
-<<<<<<< Updated upstream
+    this.track("message_queued", { chatId: input.chatId, messageId: input.messageId, matchedEntry: match.matchedEntry });
     return { matchedEntry: match.matchedEntry };
   }
 
@@ -82,19 +78,14 @@ export class DeleteItService {
     },
     api: TelegramApi,
   ) {
-    if (!input.userId) return { ignored: "anonymous" as const };
-    if (input.userIsBot) return { ignored: "bot" as const };
-=======
-    this.track("message_queued", { chatId: input.chatId, messageId: input.messageId, matchedEntry: match.matchedEntry });
-    return { react: "👾" as const, matchedEntry: match.matchedEntry };
-  }
-
-  async handleReaction(input: { chatId: number; messageId: number; userId?: number; hasDeleteItReaction: boolean }, api: TelegramApi) {
     if (!input.userId) {
       this.track("reaction_ignored", { reason: "anonymous", chatId: input.chatId, messageId: input.messageId });
       return { ignored: "anonymous" as const };
     }
->>>>>>> Stashed changes
+    if (input.userIsBot) {
+      this.track("reaction_ignored", { reason: "bot", chatId: input.chatId, messageId: input.messageId, userId: input.userId });
+      return { ignored: "bot" as const };
+    }
 
     const member = await api.getChatMember(input.chatId, input.userId);
     if (member.status !== "creator" && member.status !== "administrator") {
@@ -102,7 +93,6 @@ export class DeleteItService {
       return { ignored: "non-admin" as const };
     }
 
-<<<<<<< Updated upstream
     const row = this.repo.getQueueRow(input.chatId, input.messageId);
     const addedVetoReaction = !input.hadVetoReaction && input.hasVetoReaction;
     const removedVetoReaction = input.hadVetoReaction && !input.hasVetoReaction;
@@ -111,18 +101,24 @@ export class DeleteItService {
 
     if (row?.matchedWord === MANUAL_REACTION_MATCH && removedDeleteReaction) {
       const cleared = this.repo.removePendingQueueRow({ chatId: input.chatId, messageId: input.messageId });
+      this.track("manual_message_unflagged", { chatId: input.chatId, messageId: input.messageId, userId: input.userId, cleared });
       return { unflagged: true as const, clearReaction: true as const, cleared };
     }
 
     if (addedVetoReaction) {
-      if (!row) return { ignored: "not-queued" as const };
+      if (!row) {
+        this.track("reaction_ignored", { reason: "not-queued", chatId: input.chatId, messageId: input.messageId, userId: input.userId });
+        return { ignored: "not-queued" as const };
+      }
 
       this.repo.addVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId, createdAt: this.now() });
+      this.track("deletion_veto_added", { chatId: input.chatId, messageId: input.messageId, userId: input.userId });
       return { vetoed: true as const, reactions: vetoReactions() };
     }
 
     if (removedVetoReaction) {
       this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
+      this.track("deletion_veto_removed", { chatId: input.chatId, messageId: input.messageId, userId: input.userId });
       if (!this.repo.getQueueRow(input.chatId, input.messageId)) return { vetoed: false as const };
       if (this.repo.countVetoes(input.chatId, input.messageId) > 0) return { vetoed: false as const };
       if (input.hasDeleteReaction) return { flagged: true as const, reactions: deletionReactions() };
@@ -139,6 +135,7 @@ export class DeleteItService {
           detectedAt: now,
           deleteAfter: now + this.options.deleteDelaySeconds,
         });
+        this.track("message_manually_queued", { chatId: input.chatId, messageId: input.messageId, userId: input.userId });
       }
       if (this.repo.countVetoes(input.chatId, input.messageId) > 0) return { flagged: true as const };
       return { flagged: true as const, reactions: deletionReactions() };
@@ -149,18 +146,8 @@ export class DeleteItService {
       return { vetoed: false as const, reactions: deletionReactions() };
     }
 
+    this.track("reaction_ignored", { reason: "no-reaction-change", chatId: input.chatId, messageId: input.messageId, userId: input.userId });
     return { ignored: "no-reaction-change" as const };
-=======
-    if (input.hasDeleteItReaction) {
-      this.repo.addVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId, createdAt: this.now() });
-      this.track("deletion_veto_added", { chatId: input.chatId, messageId: input.messageId, userId: input.userId });
-      return { vetoed: true as const };
-    }
-
-    this.repo.removeVeto({ chatId: input.chatId, messageId: input.messageId, adminUserId: input.userId });
-    this.track("deletion_veto_removed", { chatId: input.chatId, messageId: input.messageId, userId: input.userId });
-    return { vetoed: false as const };
->>>>>>> Stashed changes
   }
 
   async sweep(api: Pick<TelegramApi, "deleteMessage">, limit = 50) {
